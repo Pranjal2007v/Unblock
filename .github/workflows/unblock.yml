@@ -1,1 +1,26 @@
+name: unblock
+
+on:
+  schedule:
+    # Run every hour to check for stale issue assignments
+    - cron: "0 * * * *"
+  issues:
+    # Start tracking as soon as an issue is assigned
+    types: [assigned]
+
+jobs:
+  unblock:
+    runs-on: ubuntu-latest
+
+    permissions:
+      issues: write
+      pull-requests: read
+
+    steps:
+      - name: Run unblock
+        uses: Pranjal2007v/unblock@v1
+        with:
+          github-token: ${{ secrets.UNBLOCK_TOKEN }}
+          days-until-unassign: 7
+          warning-before-days: 2
 
