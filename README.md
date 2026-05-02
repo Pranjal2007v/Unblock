@@ -131,3 +131,5 @@ Contributions are welcome! Please check [CONTRIBUTING.md](CONTRIBUTING.md) for g
 ## License
 
 MIT © [Pranjal2007v](https://github.com/Pranjal2007v)
+[bitflicker64(https://github.com/bitflicker64)]
+[ishitasharma2490(https://github.com/ishitasharma2490)]
