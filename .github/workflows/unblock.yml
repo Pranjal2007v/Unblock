@@ -1,26 +1,16 @@
-name: unblock
+name: My Workflow          # ① shown in the Actions tab
 
-on:
-  schedule:
-    # Run every hour to check for stale issue assignments
-    - cron: "0 * * * *"
-  issues:
-    # Start tracking as soon as an issue is assigned
-    types: [assigned]
+on:                        # ② when to run it
+  push:
+    branches: [main]       # on every push to main
+  pull_request:            # and on every PR
 
 jobs:
-  unblock:
-    runs-on: ubuntu-latest
-
-    permissions:
-      issues: write
-      pull-requests: read
+  build:                   # ③ a job named "build"
+    runs-on: ubuntu-latest # ④ the machine/runner
 
     steps:
-      - name: Run unblock
-        uses: Pranjal2007v/unblock@v1
-        with:
-          github-token: ${{ secrets.UNBLOCK_TOKEN }}
-          days-until-unassign: 7
-          warning-before-days: 2
+      - uses: actions/checkout@v4   # check out your code
 
+      - name: Say hello             # a custom step
+        run: echo "Hello, GitHub!"
