@@ -122,11 +122,18 @@ Fair for contributors. Easier for maintainers. Better for everyone.
 
 ---
 
+## Design Doc
+
+Read the design doc here: [Design Doc](./DESIGN.md)
+
+---
+
 ## Contributing
 
 Contributions are welcome! Please check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
+
 
 ## License
 
