@@ -1,16 +1,127 @@
-name: My Workflow          # ① shown in the Actions tab
+name: DeepWiki Issue Bot
 
-on:                        # ② when to run it
-  push:
-    branches: [main]       # on every push to main
-  pull_request:            # and on every PR
+on:
+  issues:
+    types: [opened]
 
 jobs:
-  build:                   # ③ a job named "build"
-    runs-on: ubuntu-latest # ④ the machine/runner
+  answer-issue:
+    runs-on: ubuntu-latest
+
+    permissions:
+      issues: write
 
     steps:
-      - uses: actions/checkout@v4   # check out your code
+      - name: Answer issue with DeepWiki + Groq
+        uses: actions/github-script@v7
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          REPO_NAME: apache/incubator-hugegraph
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issueNumber = context.issue.number;
+            const issueTitle = context.payload.issue.title;
+            const issueBody = context.payload.issue.body || '';
+            const repoName = process.env.REPO_NAME;
 
-      - name: Say hello             # a custom step
-        run: echo "Hello, GitHub!"
+            console.log(`Processing issue #${issueNumber}`);
+
+            async function askDeepWiki(question) {
+              const response = await fetch('https://mcp.deepwiki.com/mcp', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                  jsonrpc: '2.0',
+                  id: 1,
+                  method: 'tools/call',
+                  params: {
+                    name: 'ask_question',
+                    arguments: {
+                      repoName,
+                      question
+                    }
+                  }
+                })
+              });
+
+              const data = await response.json();
+
+              return (
+                data.result?.content
+                  ?.filter(c => c.type === 'text')
+                  ?.map(c => c.text)
+                  ?.join('\n') || ''
+              );
+            }
+
+            async function callGroq(prompt, contextText) {
+              const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+                },
+                body: JSON.stringify({
+                  model: 'llama-3.3-70b-versatile',
+                  messages: [
+                    {
+                      role: 'system',
+                      content: `You are a helpful GitHub bot for ${repoName}.`
+                    },
+                    {
+                      role: 'user',
+                      content: `
+Issue:
+${prompt}
+
+DeepWiki Context:
+${contextText}
+
+Write a helpful GitHub comment in markdown.
+                      `
+                    }
+                  ],
+                  max_tokens: 1024
+                })
+              });
+
+              const data = await response.json();
+
+              return data.choices?.[0]?.message?.content || 'No response generated.';
+            }
+
+            try {
+              const question = `${issueTitle}\n\n${issueBody}`;
+              const deepwikiContext = await askDeepWiki(question);
+
+              const answer = await callGroq(question, deepwikiContext);
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: `${answer}
+
+---
+_AI generated using DeepWiki + Groq._
+`
+              });
+
+              console.log(`Successfully answered issue #${issueNumber}`);
+            } catch (err) {
+              console.error(err);
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: `🤖 Bot failed with error:
+
+\`${err.message}\``
+              });
+
+              core.setFailed(err.message);
+            }
