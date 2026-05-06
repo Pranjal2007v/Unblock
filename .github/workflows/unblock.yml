@@ -3,14 +3,12 @@ name: DeepWiki Issue Bot
 on:
   issues:
     types: [opened]
-
   issue_comment:
     types: [created]
 
 jobs:
   answer-issue:
     runs-on: ubuntu-latest
-
     permissions:
       issues: write
 
@@ -23,531 +21,255 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            // ── Bot loop guard + quote-reply filter ──────────────────────────
             const isComment = context.eventName === 'issue_comment';
-
             if (isComment) {
-              const commenter =
-                context.payload.comment?.user?.login || '';
-
+              const commenter = context.payload.comment?.user?.login ?? '';
               if (commenter === 'github-actions[bot]') {
-                console.log(
-                  'Skipping bot comment to prevent loops'
-                );
+                console.log('Skipping — this is a bot comment, ignoring to prevent loop.');
                 return;
               }
-
-              const commentBody =
-                context.payload.comment?.body || '';
-
-              const isQuoteReply = commentBody
-                .trimStart()
-                .startsWith('>');
-
+              const commentBody = context.payload.comment?.body ?? '';
+              const isQuoteReply = commentBody.trimStart().startsWith('>');
               if (!isQuoteReply) {
-                console.log(
-                  'Skipping non quote-reply comment'
-                );
+                console.log('Skipping — comment is not a quote-reply, ignoring.');
                 return;
               }
-
-              const strippedBody = commentBody
+              const stripped = commentBody
                 .split('\n')
-                .filter(
-                  line =>
-                    !line.trimStart().startsWith('>')
-                )
+                .filter(line => !line.trimStart().startsWith('>'))
                 .join('\n')
                 .trim();
-
-              if (!strippedBody) {
-                console.log(
-                  'Skipping empty quote reply'
-                );
+              if (!stripped) {
+                console.log('Skipping — no content after stripping quote lines.');
                 return;
               }
             }
 
+            // ── Context: new issue vs reply comment ──────────────────────────
             const issueNumber = isComment
               ? context.payload.issue.number
               : context.issue.number;
-
-            const issueTitle =
-              context.payload.issue.title;
-
+            const issueTitle = context.payload.issue.title;
             const rawBody = isComment
-              ? context.payload.comment.body
+              ? (context.payload.comment.body || '')
                   .split('\n')
-                  .filter(
-                    line =>
-                      !line.trimStart().startsWith('>')
-                  )
+                  .filter(line => !line.trimStart().startsWith('>'))
                   .join('\n')
                   .trim()
               : context.payload.issue.body || '';
 
+            // ── Clean issue template boilerplate ─────────────────────────────
             function cleanIssueBody(body) {
               return body
-                .replace(
-                  /##\s*(Environment|环境信息)[\s\S]*?(?=##|$)/gi,
-                  ''
-                )
-                .replace(
-                  /##\s*(Before submit|提交前确认)[\s\S]*?(?=##|$)/gi,
-                  ''
-                )
-                .replace(
-                  /##\s*(Schema|Vertex\/Edge example|问题点|元数据)[\s\S]*?(?=##|$)/gi,
-                  ''
-                )
-                .replace(
-                  /- \[[ x]\].*\n?/g,
-                  ''
-                )
-                .replace(
-                  /Server Version:.*\n?/g,
-                  ''
-                )
-                .replace(
-                  /Backend:.*\n?/g,
-                  ''
-                )
-                .replace(
-                  /OS:.*\n?/g,
-                  ''
-                )
-                .replace(
-                  /Data Size:.*\n?/g,
-                  ''
-                )
-                .replace(
-                  /N\/A.*\n?/gi,
-                  ''
-                )
-                .replace(
-                  /\n{3,}/g,
-                  '\n\n'
-                )
+                .replace(/##\s*(Environment|环境信息)[\s\S]*?(?=##|$)/gi, '')
+                .replace(/##\s*(Before submit|提交前确认)[\s\S]*?(?=##|$)/gi, '')
+                .replace(/##\s*(Schema|Vertex\/Edge example|问题点|元数据)[\s\S]*?(?=##|$)/gi, '')
+                .replace(/- \[[ x]\].*\n?/g, '')
+                .replace(/Server Version:.*\n?/g, '')
+                .replace(/Backend:.*\n?/g, '')
+                .replace(/OS:.*\n?/g, '')
+                .replace(/Data Size:.*\n?/g, '')
+                .replace(/N\/A.*\n?/gi, '')
+                .replace(/\n{3,}/g, '\n\n')
                 .trim();
             }
 
-            const issueBody =
-              cleanIssueBody(rawBody);
+            const issueBody = cleanIssueBody(rawBody);
+            const repoName  = process.env.REPO_NAME;
 
-            const repoName = process.env.REPO_NAME;
+            console.log(`Processing ${isComment ? 'comment' : 'issue'} #${issueNumber}: ${issueTitle}`);
+            console.log('Cleaned body preview:', issueBody.slice(0, 200));
 
-            console.log(
-              `Processing issue #${issueNumber}`
-            );
-
-            console.log(
-              'Cleaned issue preview:',
-              issueBody.slice(0, 200)
-            );
-
-            async function fetchWithTimeout(
-              url,
-              options,
-              timeoutMs = 35000
-            ) {
-              const controller =
-                new AbortController();
-
-              const timeout = setTimeout(
-                () => controller.abort(),
-                timeoutMs
-              );
-
+            // ── Fetch with timeout ────────────────────────────────────────────
+            async function fetchWithTimeout(url, options, timeoutMs = 35000) {
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), timeoutMs);
               try {
-                return await fetch(url, {
-                  ...options,
-                  signal: controller.signal
-                });
+                return await fetch(url, { ...options, signal: controller.signal });
+              } catch (err) {
+                if (err.name === 'AbortError') throw new Error(`Request timed out after ${timeoutMs}ms: ${url}`);
+                throw err;
               } finally {
-                clearTimeout(timeout);
+                clearTimeout(timer);
               }
             }
 
+            // ── SSE parser ───────────────────────────────────────────────────
             function parseMCPResponse(text) {
               const lines = text.split('\n');
-
               for (const line of lines) {
-                if (line.startsWith(':')) {
-                  continue;
-                }
-
-                if (!line.startsWith('data:')) {
-                  continue;
-                }
-
-                const jsonStr =
-                  line.slice(5).trim();
-
-                if (
-                  !jsonStr ||
-                  jsonStr === '[DONE]'
-                ) {
-                  continue;
-                }
-
+                if (line.startsWith(':')) continue;
+                if (!line.startsWith('data:')) continue;
+                const jsonStr = line.slice(5).trim();
+                if (!jsonStr || jsonStr === '[DONE]') continue;
                 try {
-                  const parsed =
-                    JSON.parse(jsonStr);
-
-                  if (
-                    parsed.method &&
-                    !parsed.id
-                  ) {
-                    continue;
-                  }
-
-                  if (
-                    parsed.id !== undefined
-                  ) {
-                    return parsed;
-                  }
-                } catch (e) {
-                  continue;
-                }
+                  const parsed = JSON.parse(jsonStr);
+                  if (parsed.method && !parsed.id) continue;
+                  if (parsed.id !== undefined) return parsed;
+                } catch (e) { continue; }
               }
-
-              try {
-                return JSON.parse(text);
-              } catch (e) {}
-
-              throw new Error(
-                'No valid JSON-RPC response found'
-              );
+              try { return JSON.parse(text); } catch (e) {}
+              throw new Error('No valid JSON-RPC response found in SSE stream');
             }
 
+            // ── DeepWiki MCP ─────────────────────────────────────────────────
             async function askDeepWiki(question) {
-              const url =
-                'https://mcp.deepwiki.com/mcp';
-
+              const url = 'https://mcp.deepwiki.com/mcp';
               const baseHeaders = {
-                'Content-Type':
-                  'application/json',
-                Accept:
-                  'application/json, text/event-stream'
+                'Content-Type': 'application/json',
+                'Accept': 'application/json, text/event-stream'
               };
 
-              const initRes =
-                await fetchWithTimeout(
-                  url,
-                  {
-                    method: 'POST',
-                    headers: baseHeaders,
-                    body: JSON.stringify({
-                      jsonrpc: '2.0',
-                      id: 1,
-                      method: 'initialize',
-                      params: {
-                        protocolVersion:
-                          '2024-11-05',
-                        capabilities: {},
-                        clientInfo: {
-                          name:
-                            'deepwiki-bot',
-                          version: '1.0.0'
-                        }
-                      }
-                    })
+              const initRes = await fetchWithTimeout(url, {
+                method: 'POST',
+                headers: baseHeaders,
+                body: JSON.stringify({
+                  jsonrpc: '2.0', id: 1, method: 'initialize',
+                  params: {
+                    protocolVersion: '2024-11-05',
+                    capabilities: {},
+                    clientInfo: { name: 'deepwiki-bot', version: '1.0.0' }
                   }
-                );
+                })
+              });
 
-              const initText =
-                await initRes.text();
+              if (!initRes.ok) throw new Error(`DeepWiki init HTTP ${initRes.status}`);
+              parseMCPResponse(await initRes.text());
 
-              parseMCPResponse(initText);
+              const sessionId = initRes.headers.get('mcp-session-id');
+              const headers = { ...baseHeaders };
+              if (sessionId) headers['mcp-session-id'] = sessionId;
 
-              const sessionId =
-                initRes.headers.get(
-                  'mcp-session-id'
-                );
+              const toolRes = await fetchWithTimeout(url, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                  jsonrpc: '2.0', id: 2, method: 'tools/call',
+                  params: { name: 'ask_question', arguments: { repoName, question } }
+                })
+              }, 45000);
 
-              const headers = {
-                ...baseHeaders
-              };
+              const toolText = await toolRes.text();
+              console.log('Tool response preview:', toolText.slice(0, 600));
+              const toolData = parseMCPResponse(toolText);
 
-              if (sessionId) {
-                headers[
-                  'mcp-session-id'
-                ] = sessionId;
-              }
+              if (toolData.error) throw new Error(`DeepWiki tool error: ${JSON.stringify(toolData.error)}`);
 
-              const toolRes =
-                await fetchWithTimeout(
-                  url,
-                  {
-                    method: 'POST',
-                    headers,
-                    body: JSON.stringify({
-                      jsonrpc: '2.0',
-                      id: 2,
-                      method: 'tools/call',
-                      params: {
-                        name: 'ask_question',
-                        arguments: {
-                          repoName,
-                          question
-                        }
-                      }
-                    })
-                  },
-                  45000
-                );
-
-              const toolText =
-                await toolRes.text();
-
-              console.log(
-                'DeepWiki response preview:',
-                toolText.slice(0, 300)
-              );
-
-              const toolData =
-                parseMCPResponse(toolText);
-
-              if (toolData.error) {
-                throw new Error(
-                  JSON.stringify(
-                    toolData.error
-                  )
-                );
-              }
-
-              const content =
-                toolData.result?.content ||
-                [];
-
-              return content
-                .filter(
-                  c => c.type === 'text'
-                )
-                .map(c => c.text)
-                .join('\n');
+              const content = toolData.result?.content ?? [];
+              return content.filter(c => c.type === 'text').map(c => c.text).join('\n');
             }
 
-            async function callGroq(
-              issueTitle,
-              originalIssueBody,
-              followUpQuestion,
-              deepwikiContext,
-              history = [],
-              retries = 2
-            ) {
+            // ── Groq with retry + conversation history ───────────────────────
+            async function callGroq(issueTitle, originalIssueBody, followUpQuestion, deepwikiContext, history = [], retries = 2) {
+              const systemPrompt = deepwikiContext
+                ? `You are a helpful, friendly GitHub bot for the ${repoName} repository. Use this DeepWiki documentation context to answer:\n\n${deepwikiContext}\n\nYou have access to the original issue description and full conversation history. Use them to understand context and follow-up references like "those modes" or "the second option you mentioned".`
+                : `You are a helpful GitHub bot for the ${repoName} repository. DeepWiki context was unavailable — answer from general knowledge and be honest about uncertainty. Use the original issue and conversation history for context.`;
+
+              const isFollowUp = history.length > 0;
               const messages = [
-                {
-                  role: 'system',
-                  content: `You are a helpful GitHub bot for ${repoName}.`
-                },
-                {
-                  role: 'user',
-                  content: `
-Issue Title:
-${issueTitle}
-
-Original Issue Description:
-${originalIssueBody}
-                  `
-                },
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: `Issue Title: ${issueTitle}\n\nOriginal Issue Description:\n${originalIssueBody || '(no description provided)'}` },
                 ...history,
-                {
-                  role: 'user',
-                  content: followUpQuestion
-                    ? `
-Follow up question:
-${followUpQuestion}
-
-DeepWiki Context:
-${deepwikiContext}
-
-Write a helpful GitHub comment in markdown.
-                      `
-                    : `
-Issue:
-${issueTitle}
-
-${originalIssueBody}
-
-DeepWiki Context:
-${deepwikiContext}
-
-Write a helpful GitHub comment in markdown.
-                      `
-                }
+                ...(isFollowUp
+                  ? [{ role: 'user', content: `Follow-up question: ${followUpQuestion}\n\nWrite a helpful GitHub comment using the original issue and conversation above for full context. Use markdown. End with a note that you are an AI bot powered by DeepWiki + Groq. All responses must be in English.` }]
+                  : [{ role: 'user', content: `Write a helpful GitHub comment answering this issue. Use markdown. End with a note that you are an AI bot powered by DeepWiki + Groq and invite follow-up questions by quote-replying. All responses must be in English.` }]
+                )
               ];
 
-              for (
-                let attempt = 1;
-                attempt <= retries;
-                attempt++
-              ) {
+              for (let attempt = 1; attempt <= retries; attempt++) {
                 try {
-                  const response =
-                    await fetchWithTimeout(
-                      'https://api.groq.com/openai/v1/chat/completions',
-                      {
-                        method: 'POST',
-                        headers: {
-                          'Content-Type':
-                            'application/json',
-                          Authorization:
-                            `Bearer ${process.env.OPENAI_API_KEY}`
-                        },
-                        body: JSON.stringify({
-                          model:
-                            'llama-3.3-70b-versatile',
-                          messages,
-                          max_tokens: 1024
-                        })
-                      },
-                      20000
-                    );
+                  const res = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+                    },
+                    body: JSON.stringify({ model: 'llama-3.3-70b-versatile', max_tokens: 1024, messages })
+                  }, 20000);
 
-                  const data =
-                    await response.json();
-
-                  if (
-                    response.status ===
-                    429
-                  ) {
-                    const waitMs =
-                      attempt * 5000;
-
-                    console.warn(
-                      `Rate limited. Retrying in ${waitMs}ms`
-                    );
-
-                    await new Promise(
-                      resolve =>
-                        setTimeout(
-                          resolve,
-                          waitMs
-                        )
-                    );
-
+                  const data = await res.json();
+                  if (res.status === 429) {
+                    const wait = attempt * 5000;
+                    console.warn(`Groq rate limited. Waiting ${wait}ms before retry...`);
+                    await new Promise(r => setTimeout(r, wait));
                     continue;
                   }
-
-                  if (data.error) {
-                    throw new Error(
-                      JSON.stringify(
-                        data.error
-                      )
-                    );
-                  }
-
-                  return (
-                    data.choices?.[0]
-                      ?.message?.content ||
-                    'No response generated.'
-                  );
+                  if (data.error) throw new Error(`Groq error: ${JSON.stringify(data.error)}`);
+                  return data.choices?.[0]?.message?.content ?? '';
                 } catch (err) {
-                  if (
-                    attempt === retries
-                  ) {
-                    throw err;
-                  }
-
-                  console.warn(
-                    `Groq retry ${attempt} failed: ${err.message}`
-                  );
-
-                  await new Promise(
-                    resolve =>
-                      setTimeout(
-                        resolve,
-                        3000
-                      )
-                  );
+                  if (attempt === retries) throw err;
+                  console.warn(`Groq attempt ${attempt} failed: ${err.message}. Retrying...`);
+                  await new Promise(r => setTimeout(r, 3000));
                 }
               }
             }
 
+            // ── Main ─────────────────────────────────────────────────────────
             try {
+              const placeholder = await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                issue_number: issueNumber,
+                body: '🤖 _DeepWiki Bot is looking up the repository docs and preparing an answer…_'
+              });
+
+              const question = `${issueTitle}\n\n${issueBody}`.trim();
+
+              let conversationHistory = [];
               let originalIssueBody = issueBody;
-
-              let conversationHistory =
-                [];
-
               if (isComment) {
-                const { data: issueData } =
-                  await github.rest.issues.get({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: issueNumber
+                try {
+                  const { data: issueData } = await github.rest.issues.get({
+                    owner: context.repo.owner, repo: context.repo.repo, issue_number: issueNumber
                   });
+                  originalIssueBody = cleanIssueBody(issueData.body || '');
 
-                originalIssueBody =
-                  cleanIssueBody(
-                    issueData.body || ''
-                  );
-
-                const { data: comments } =
-                  await github.rest.issues.listComments({
-                    owner: context.repo.owner,
-                    repo: context.repo.repo,
-                    issue_number: issueNumber
+                  const { data: allComments } = await github.rest.issues.listComments({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    issue_number: issueNumber, per_page: 20
                   });
-
-                conversationHistory =
-                  comments.map(comment => ({
-                    role:
-                      comment.user.login ===
-                      'github-actions[bot]'
-                        ? 'assistant'
-                        : 'user',
-                    content: comment.body
-                  }));
+                  conversationHistory = allComments
+                    .filter(c => c.id !== placeholder.data.id)
+                    .map(c => ({
+                      role: c.user.login === 'github-actions[bot]' ? 'assistant' : 'user',
+                      content: c.body.replace(/\n---\n_.*_$/s, '').trim()
+                    }));
+                  console.log(`Loaded ${conversationHistory.length} previous comments for context`);
+                } catch (err) {
+                  console.warn('Could not fetch issue/comment history:', err.message);
+                }
               }
 
-              const question =
-                `${issueTitle}\n\n${issueBody}`;
+              let deepwikiContext = '';
+              try {
+                deepwikiContext = await askDeepWiki(question);
+                console.log('DeepWiki context length:', deepwikiContext.length);
+                console.log('DeepWiki context preview:', deepwikiContext.slice(0, 300));
+              } catch (err) {
+                console.warn('DeepWiki fetch failed, continuing without context:', err.message);
+              }
 
-              const deepwikiContext =
-                await askDeepWiki(question);
+              const followUp = isComment ? issueBody : '';
+              const answer = await callGroq(issueTitle, originalIssueBody, followUp, deepwikiContext, conversationHistory);
 
-              console.log(
-                'DeepWiki context length:',
-                deepwikiContext.length
-              );
+              const contextNote = deepwikiContext
+                ? '_✅ Powered by DeepWiki + Groq — answer based on actual repo documentation._'
+                : '_⚠️ DeepWiki context unavailable — answer based on general knowledge. A maintainer may want to follow up._';
 
-              const answer =
-                await callGroq(
-                  issueTitle,
-                  originalIssueBody,
-                  isComment
-                    ? issueBody
-                    : '',
-                  deepwikiContext,
-                  conversationHistory
-                );
-
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issueNumber,
-                body: `${answer}
-
----
-_AI generated using DeepWiki + Groq._
-`
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: placeholder.data.id,
+                body: `${answer}\n\n---\n${contextNote}`
               });
 
-              console.log(
-                `Successfully answered issue #${issueNumber}`
-              );
+              console.log(`Successfully answered issue #${issueNumber}`);
             } catch (err) {
-              console.error(err);
-
+              console.error('Bot error:', err.message);
               await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+                owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: issueNumber,
-                body: `🤖 Bot failed with error:
-
-\`${err.message}\``
+                body: `🤖 _DeepWiki Bot encountered an error: \`${err.message}\`. A maintainer will follow up shortly._`
               });
-
               core.setFailed(err.message);
             }
