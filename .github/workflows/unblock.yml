@@ -25,14 +25,64 @@ jobs:
           script: |
             const isComment = context.eventName === 'issue_comment';
 
+            if (isComment) {
+              const commenter =
+                context.payload.comment?.user?.login || '';
+
+              if (commenter === 'github-actions[bot]') {
+                console.log(
+                  'Skipping bot comment to prevent loops'
+                );
+                return;
+              }
+
+              const commentBody =
+                context.payload.comment?.body || '';
+
+              const isQuoteReply = commentBody
+                .trimStart()
+                .startsWith('>');
+
+              if (!isQuoteReply) {
+                console.log(
+                  'Skipping non quote-reply comment'
+                );
+                return;
+              }
+
+              const strippedBody = commentBody
+                .split('\n')
+                .filter(
+                  line =>
+                    !line.trimStart().startsWith('>')
+                )
+                .join('\n')
+                .trim();
+
+              if (!strippedBody) {
+                console.log(
+                  'Skipping empty quote reply'
+                );
+                return;
+              }
+            }
+
             const issueNumber = isComment
               ? context.payload.issue.number
               : context.issue.number;
 
-            const issueTitle = context.payload.issue.title;
+            const issueTitle =
+              context.payload.issue.title;
 
             const issueBody = isComment
-              ? context.payload.comment.body || ''
+              ? context.payload.comment.body
+                  .split('\n')
+                  .filter(
+                    line =>
+                      !line.trimStart().startsWith('>')
+                  )
+                  .join('\n')
+                  .trim()
               : context.payload.issue.body || '';
 
             const repoName = process.env.REPO_NAME;
@@ -40,24 +90,27 @@ jobs:
             console.log(`Processing issue #${issueNumber}`);
 
             async function askDeepWiki(question) {
-              const response = await fetch('https://mcp.deepwiki.com/mcp', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                  jsonrpc: '2.0',
-                  id: 1,
-                  method: 'tools/call',
-                  params: {
-                    name: 'ask_question',
-                    arguments: {
-                      repoName,
-                      question
+              const response = await fetch(
+                'https://mcp.deepwiki.com/mcp',
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json'
+                  },
+                  body: JSON.stringify({
+                    jsonrpc: '2.0',
+                    id: 1,
+                    method: 'tools/call',
+                    params: {
+                      name: 'ask_question',
+                      arguments: {
+                        repoName,
+                        question
+                      }
                     }
-                  }
-                })
-              });
+                  })
+                }
+              );
 
               const data = await response.json();
 
@@ -147,13 +200,15 @@ Write a helpful GitHub comment in markdown.
               let conversationHistory = [];
 
               if (isComment) {
-                const { data: issueData } = await github.rest.issues.get({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: issueNumber
-                });
+                const { data: issueData } =
+                  await github.rest.issues.get({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber
+                  });
 
-                originalIssueBody = issueData.body || '';
+                originalIssueBody =
+                  issueData.body || '';
 
                 const { data: comments } =
                   await github.rest.issues.listComments({
@@ -162,18 +217,22 @@ Write a helpful GitHub comment in markdown.
                     issue_number: issueNumber
                   });
 
-                conversationHistory = comments.map(comment => ({
-                  role:
-                    comment.user.login === 'github-actions[bot]'
-                      ? 'assistant'
-                      : 'user',
-                  content: comment.body
-                }));
+                conversationHistory = comments.map(
+                  comment => ({
+                    role:
+                      comment.user.login ===
+                      'github-actions[bot]'
+                        ? 'assistant'
+                        : 'user',
+                    content: comment.body
+                  })
+                );
               }
 
               const question = `${issueTitle}\n\n${issueBody}`;
 
-              const deepwikiContext = await askDeepWiki(question);
+              const deepwikiContext =
+                await askDeepWiki(question);
 
               const answer = await callGroq(
                 issueTitle,
