@@ -4,6 +4,9 @@ on:
   issues:
     types: [opened]
 
+  issue_comment:
+    types: [created]
+
 jobs:
   answer-issue:
     runs-on: ubuntu-latest
@@ -20,9 +23,18 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const issueNumber = context.issue.number;
+            const isComment = context.eventName === 'issue_comment';
+
+            const issueNumber = isComment
+              ? context.payload.issue.number
+              : context.issue.number;
+
             const issueTitle = context.payload.issue.title;
-            const issueBody = context.payload.issue.body || '';
+
+            const issueBody = isComment
+              ? context.payload.comment.body || ''
+              : context.payload.issue.body || '';
+
             const repoName = process.env.REPO_NAME;
 
             console.log(`Processing issue #${issueNumber}`);
@@ -57,47 +69,119 @@ jobs:
               );
             }
 
-            async function callGroq(prompt, contextText) {
-              const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+            async function callGroq(
+              issueTitle,
+              originalIssueBody,
+              followUpQuestion,
+              deepwikiContext,
+              history = []
+            ) {
+              const messages = [
+                {
+                  role: 'system',
+                  content: `You are a helpful GitHub bot for ${repoName}.`
                 },
-                body: JSON.stringify({
-                  model: 'llama-3.3-70b-versatile',
-                  messages: [
-                    {
-                      role: 'system',
-                      content: `You are a helpful GitHub bot for ${repoName}.`
-                    },
-                    {
-                      role: 'user',
-                      content: `
-Issue:
-${prompt}
+                {
+                  role: 'user',
+                  content: `
+Issue Title:
+${issueTitle}
+
+Original Issue Description:
+${originalIssueBody}
+                  `
+                },
+                ...history,
+                {
+                  role: 'user',
+                  content: followUpQuestion
+                    ? `
+Follow up question:
+${followUpQuestion}
 
 DeepWiki Context:
-${contextText}
+${deepwikiContext}
 
 Write a helpful GitHub comment in markdown.
                       `
-                    }
-                  ],
-                  max_tokens: 1024
-                })
-              });
+                    : `
+Issue:
+${issueTitle}
+
+${originalIssueBody}
+
+DeepWiki Context:
+${deepwikiContext}
+
+Write a helpful GitHub comment in markdown.
+                      `
+                }
+              ];
+
+              const response = await fetch(
+                'https://api.groq.com/openai/v1/chat/completions',
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+                  },
+                  body: JSON.stringify({
+                    model: 'llama-3.3-70b-versatile',
+                    messages,
+                    max_tokens: 1024
+                  })
+                }
+              );
 
               const data = await response.json();
 
-              return data.choices?.[0]?.message?.content || 'No response generated.';
+              return (
+                data.choices?.[0]?.message?.content ||
+                'No response generated.'
+              );
             }
 
             try {
+              let originalIssueBody = issueBody;
+              let conversationHistory = [];
+
+              if (isComment) {
+                const { data: issueData } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber
+                });
+
+                originalIssueBody = issueData.body || '';
+
+                const { data: comments } =
+                  await github.rest.issues.listComments({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    issue_number: issueNumber
+                  });
+
+                conversationHistory = comments.map(comment => ({
+                  role:
+                    comment.user.login === 'github-actions[bot]'
+                      ? 'assistant'
+                      : 'user',
+                  content: comment.body
+                }));
+              }
+
               const question = `${issueTitle}\n\n${issueBody}`;
+
               const deepwikiContext = await askDeepWiki(question);
 
-              const answer = await callGroq(question, deepwikiContext);
+              const answer = await callGroq(
+                issueTitle,
+                originalIssueBody,
+                isComment ? issueBody : '',
+                deepwikiContext,
+                conversationHistory
+              );
 
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
@@ -110,7 +194,9 @@ _AI generated using DeepWiki + Groq._
 `
               });
 
-              console.log(`Successfully answered issue #${issueNumber}`);
+              console.log(
+                `Successfully answered issue #${issueNumber}`
+              );
             } catch (err) {
               console.error(err);
 
