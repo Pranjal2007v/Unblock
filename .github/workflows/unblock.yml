@@ -74,7 +74,7 @@ jobs:
             const issueTitle =
               context.payload.issue.title;
 
-            const issueBody = isComment
+            const rawBody = isComment
               ? context.payload.comment.body
                   .split('\n')
                   .filter(
@@ -85,9 +85,64 @@ jobs:
                   .trim()
               : context.payload.issue.body || '';
 
+            function cleanIssueBody(body) {
+              return body
+                .replace(
+                  /##\s*(Environment|环境信息)[\s\S]*?(?=##|$)/gi,
+                  ''
+                )
+                .replace(
+                  /##\s*(Before submit|提交前确认)[\s\S]*?(?=##|$)/gi,
+                  ''
+                )
+                .replace(
+                  /##\s*(Schema|Vertex\/Edge example|问题点|元数据)[\s\S]*?(?=##|$)/gi,
+                  ''
+                )
+                .replace(
+                  /- \[[ x]\].*\n?/g,
+                  ''
+                )
+                .replace(
+                  /Server Version:.*\n?/g,
+                  ''
+                )
+                .replace(
+                  /Backend:.*\n?/g,
+                  ''
+                )
+                .replace(
+                  /OS:.*\n?/g,
+                  ''
+                )
+                .replace(
+                  /Data Size:.*\n?/g,
+                  ''
+                )
+                .replace(
+                  /N\/A.*\n?/gi,
+                  ''
+                )
+                .replace(
+                  /\n{3,}/g,
+                  '\n\n'
+                )
+                .trim();
+            }
+
+            const issueBody =
+              cleanIssueBody(rawBody);
+
             const repoName = process.env.REPO_NAME;
 
-            console.log(`Processing issue #${issueNumber}`);
+            console.log(
+              `Processing issue #${issueNumber}`
+            );
+
+            console.log(
+              'Cleaned issue preview:',
+              issueBody.slice(0, 200)
+            );
 
             async function askDeepWiki(question) {
               const response = await fetch(
@@ -208,7 +263,7 @@ Write a helpful GitHub comment in markdown.
                   });
 
                 originalIssueBody =
-                  issueData.body || '';
+                  cleanIssueBody(issueData.body || '');
 
                 const { data: comments } =
                   await github.rest.issues.listComments({
@@ -229,7 +284,8 @@ Write a helpful GitHub comment in markdown.
                 );
               }
 
-              const question = `${issueTitle}\n\n${issueBody}`;
+              const question =
+                `${issueTitle}\n\n${issueBody}`;
 
               const deepwikiContext =
                 await askDeepWiki(question);
